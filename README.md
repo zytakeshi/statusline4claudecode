@@ -32,16 +32,6 @@ Colors change based on usage:
 
 ## Install
 
-### Option 1: As a Claude Code skill (recommended)
-
-```bash
-npx skills add zytakeshi/statusline4claudecode -g -a claude-code
-```
-
-Then run `/statusline` inside Claude Code to set it up.
-
-### Option 2: Installer script
-
 ```bash
 git clone https://github.com/zytakeshi/statusline4claudecode.git
 cd statusline4claudecode
@@ -55,11 +45,10 @@ The installer:
 
 Restart Claude Code after installation.
 
-### Option 3: Manual install
+### Manual install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zytakeshi/statusline4claudecode/main/statusline.sh \
-  -o ~/.claude/statusline-command.sh
+cp statusline.sh ~/.claude/statusline-command.sh
 chmod +x ~/.claude/statusline-command.sh
 ```
 
@@ -80,12 +69,6 @@ Add to `~/.claude/settings.json`:
 bash uninstall.sh
 ```
 
-Or remove the skill:
-
-```bash
-npx skills remove statusline -g -a claude-code
-```
-
 ## Configuration
 
 ### Timezone
@@ -100,7 +83,7 @@ Add this to your `~/.zshrc` or `~/.bashrc` to persist.
 
 ### Cache TTL
 
-Rate limit data is cached for 360 seconds (6 minutes) by default (API fallback mode only). Override:
+Rate limit data is cached for 360 seconds (6 minutes) by default. Override:
 
 ```bash
 export STATUSLINE_CACHE_TTL=120  # 2 minutes
