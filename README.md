@@ -99,10 +99,10 @@ export STATUSLINE_CACHE_FILE="/tmp/my-claude-cache.json"
 
 1. Claude Code pipes session JSON (model, context %, working directory) to the script via stdin
 2. The script reads git branch and diff stats from the working directory
-3. OAuth token is extracted from macOS Keychain (`Claude Code-credentials`)
-4. Rate limit data is fetched from `https://api.anthropic.com/api/oauth/usage` with the `anthropic-beta: oauth-2025-04-20` header
-5. Results are cached to avoid repeated API calls
-6. Output is rendered as 3 ANSI-colored lines
+3. **Rate limit data** is read using two strategies (in priority order):
+   - **Native (v2.1.80+):** If Claude Code provides `rate_limits` in the stdin JSON, those values are used directly — no API call needed
+   - **API fallback:** If the native fields aren't present (older Claude Code or API key mode), the OAuth token is extracted from macOS Keychain and rate limits are fetched from the Anthropic usage API (cached for 6 minutes)
+4. Output is rendered as 3 ANSI-colored lines
 
 ## Troubleshooting
 

@@ -8,7 +8,8 @@
 #   Line 3: 7-day rate limit with progress bar and reset time
 #
 # Reads JSON from stdin (provided by Claude Code's statusLine command feature).
-# Fetches rate limit data from the Anthropic OAuth usage API.
+# Rate limit data is read from the stdin JSON first (v2.1.80+); falls back to
+# fetching from the Anthropic OAuth usage API if not present.
 #
 # Requirements: bash, jq, curl, python3
 # Platform:     macOS (uses `security` for Keychain access)
@@ -98,85 +99,116 @@ if cd "$current_dir" 2>/dev/null && git rev-parse --git-dir >/dev/null 2>&1; the
 fi
 
 # ---------------------------------------------------------------------------
-# Fetch rate-limit usage from Anthropic API (cached)
+# Rate-limit usage — prefer stdin JSON (v2.1.80+), fall back to API fetch
 # ---------------------------------------------------------------------------
 five_hour_pct=0
 seven_day_pct=0
 five_hour_reset_epoch=""
 seven_day_reset_epoch=""
+rate_limits_source="none"
 
-fetch_usage() {
-    # Extract OAuth access token from macOS Keychain.
-    # The keychain entry may be truncated, so we use regex instead of jq.
-    local access_token
-    access_token=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null \
-        | python3 -c "import sys,re; m=re.search(r'\"accessToken\":\"([^\"]+)\"', sys.stdin.read()); print(m.group(1) if m else '')" 2>/dev/null)
-    if [ -z "$access_token" ]; then
-        return 1
-    fi
+# Try to read rate_limits from the stdin JSON first
+_stdin_5h_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty' 2>/dev/null)
+_stdin_7d_pct=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty' 2>/dev/null)
+_stdin_5h_reset=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty' 2>/dev/null)
+_stdin_7d_reset=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty' 2>/dev/null)
 
-    local response
-    response=$(curl -s --max-time 10 \
-        -H "Authorization: Bearer $access_token" \
-        -H "anthropic-beta: oauth-2025-04-20" \
-        "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
-    if [ -z "$response" ]; then
-        return 1
-    fi
-
-    # Verify valid JSON with expected fields
-    echo "$response" | jq -e '.five_hour' >/dev/null 2>&1 || return 1
-
-    # Save with timestamp for cache
-    local timestamp
-    timestamp=$(date +%s)
-    echo "$response" | jq --argjson ts "$timestamp" '. + {_cached_at: $ts}' \
-        > "$STATUSLINE_CACHE_FILE" 2>/dev/null
-    printf '%s' "$response"
-    return 0
-}
-
-load_usage() {
-    local now data=""
-    now=$(date +%s)
-
-    # Try cache first
-    if [ -f "$STATUSLINE_CACHE_FILE" ]; then
-        local cached_at
-        cached_at=$(jq -r '._cached_at // 0' "$STATUSLINE_CACHE_FILE" 2>/dev/null)
-        cached_at=${cached_at:-0}
-        local age=$(( now - cached_at ))
-        if [ "$age" -lt "$STATUSLINE_CACHE_TTL" ]; then
-            data=$(cat "$STATUSLINE_CACHE_FILE" 2>/dev/null)
-        fi
-    fi
-
-    # Refresh if cache is stale or missing
-    if [ -z "$data" ]; then
-        data=$(fetch_usage) || true
-    fi
-
-    if [ -z "$data" ]; then
-        return 1
-    fi
-
-    # Parse utilization (API returns percentage directly, e.g. 17.0)
-    five_hour_pct=$(echo "$data" | jq -r '.five_hour.utilization // 0' 2>/dev/null)
-    five_hour_pct=${five_hour_pct%.*}
+if [ -n "$_stdin_5h_pct" ] || [ -n "$_stdin_7d_pct" ]; then
+    # Data is available from Claude Code directly — use it
+    five_hour_pct=${_stdin_5h_pct%.*}
     [ -z "$five_hour_pct" ] && five_hour_pct=0
-
-    seven_day_pct=$(echo "$data" | jq -r '.seven_day.utilization // 0' 2>/dev/null)
-    seven_day_pct=${seven_day_pct%.*}
+    seven_day_pct=${_stdin_7d_pct%.*}
     [ -z "$seven_day_pct" ] && seven_day_pct=0
+    # resets_at from stdin is a Unix epoch integer; convert to ISO 8601 for python3 formatter
+    if [ -n "$_stdin_5h_reset" ] && [ "$_stdin_5h_reset" != "null" ]; then
+        five_hour_reset_epoch=$(python3 -c "
+from datetime import datetime, timezone
+print(datetime.fromtimestamp(${_stdin_5h_reset}, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S+0000'))
+" 2>/dev/null)
+    fi
+    if [ -n "$_stdin_7d_reset" ] && [ "$_stdin_7d_reset" != "null" ]; then
+        seven_day_reset_epoch=$(python3 -c "
+from datetime import datetime, timezone
+print(datetime.fromtimestamp(${_stdin_7d_reset}, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%S+0000'))
+" 2>/dev/null)
+    fi
+    rate_limits_source="stdin"
+else
+    # Fall back to Anthropic OAuth usage API (cached)
+    fetch_usage() {
+        # Extract OAuth access token from macOS Keychain.
+        # The keychain entry may be truncated, so we use regex instead of jq.
+        local access_token
+        access_token=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null \
+            | python3 -c "import sys,re; m=re.search(r'\"accessToken\":\"([^\"]+)\"', sys.stdin.read()); print(m.group(1) if m else '')" 2>/dev/null)
+        if [ -z "$access_token" ]; then
+            return 1
+        fi
 
-    # Parse reset timestamps (ISO 8601)
-    five_hour_reset_epoch=$(echo "$data" | jq -r '.five_hour.resets_at // empty' 2>/dev/null)
-    seven_day_reset_epoch=$(echo "$data" | jq -r '.seven_day.resets_at // empty' 2>/dev/null)
+        local response
+        response=$(curl -s --max-time 10 \
+            -H "Authorization: Bearer $access_token" \
+            -H "anthropic-beta: oauth-2025-04-20" \
+            "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
+        if [ -z "$response" ]; then
+            return 1
+        fi
 
-    return 0
-}
+        # Verify valid JSON with expected fields
+        echo "$response" | jq -e '.five_hour' >/dev/null 2>&1 || return 1
 
-load_usage
+        # Save with timestamp for cache
+        local timestamp
+        timestamp=$(date +%s)
+        echo "$response" | jq --argjson ts "$timestamp" '. + {_cached_at: $ts}' \
+            > "$STATUSLINE_CACHE_FILE" 2>/dev/null
+        printf '%s' "$response"
+        return 0
+    }
+
+    load_usage() {
+        local now data=""
+        now=$(date +%s)
+
+        # Try cache first
+        if [ -f "$STATUSLINE_CACHE_FILE" ]; then
+            local cached_at
+            cached_at=$(jq -r '._cached_at // 0' "$STATUSLINE_CACHE_FILE" 2>/dev/null)
+            cached_at=${cached_at:-0}
+            local age=$(( now - cached_at ))
+            if [ "$age" -lt "$STATUSLINE_CACHE_TTL" ]; then
+                data=$(cat "$STATUSLINE_CACHE_FILE" 2>/dev/null)
+            fi
+        fi
+
+        # Refresh if cache is stale or missing
+        if [ -z "$data" ]; then
+            data=$(fetch_usage) || true
+        fi
+
+        if [ -z "$data" ]; then
+            return 1
+        fi
+
+        # Parse utilization (API returns percentage directly, e.g. 17.0)
+        five_hour_pct=$(echo "$data" | jq -r '.five_hour.utilization // 0' 2>/dev/null)
+        five_hour_pct=${five_hour_pct%.*}
+        [ -z "$five_hour_pct" ] && five_hour_pct=0
+
+        seven_day_pct=$(echo "$data" | jq -r '.seven_day.utilization // 0' 2>/dev/null)
+        seven_day_pct=${seven_day_pct%.*}
+        [ -z "$seven_day_pct" ] && seven_day_pct=0
+
+        # Parse reset timestamps (ISO 8601)
+        five_hour_reset_epoch=$(echo "$data" | jq -r '.five_hour.resets_at // empty' 2>/dev/null)
+        seven_day_reset_epoch=$(echo "$data" | jq -r '.seven_day.resets_at // empty' 2>/dev/null)
+
+        return 0
+    }
+
+    load_usage
+    rate_limits_source="api"
+fi
 
 # ---------------------------------------------------------------------------
 # Format reset times in configured timezone using python3
