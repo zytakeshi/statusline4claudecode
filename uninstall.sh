@@ -13,7 +13,7 @@ RESET='\033[0m'
 info() { printf "${GREEN}[+]${RESET} %s\n" "$*"; }
 warn() { printf "${YELLOW}[!]${RESET} %s\n" "$*"; }
 
-# Remove script
+# Rename script with the .uninstalled suffix
 if [ -f "$SCRIPT_DST" ]; then
     mv "$SCRIPT_DST" "${SCRIPT_DST}.uninstalled"
     info "Moved $SCRIPT_DST to ${SCRIPT_DST}.uninstalled"
